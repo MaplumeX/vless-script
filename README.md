@@ -209,6 +209,8 @@ Caddyfile 首行带有 `# Managed by vless-reality install.sh` 标记，重新�
 chmod -R u=rwX,go=rX /var/www/up.example.com /var/www/down.example.com
 ```
 
+也可以让 agent 来写，见下文“让 agent 部署”。
+
 ### 客户端
 
 导入链接中的下行配置放在 `extra` 参数里（URL 编码的 JSON，包含 `downloadSettings`），
@@ -221,6 +223,32 @@ chmod -R u=rwX,go=rX /var/www/up.example.com /var/www/down.example.com
   443 交给 Caddy。
 - XHTTP → REALITY：先停用 Caddy（`systemctl disable --now caddy`，或
   `rc-service caddy stop && rc-update del caddy default`），再重新运行并选择 1。
+
+## 让 agent 部署
+
+仓库自带一份给 AI agent 用的部署说明：[`skills/vless-deploy/SKILL.md`](skills/vless-deploy/SKILL.md)。
+它覆盖整个脚本的使用流程：
+
+- 选择方案；
+- 部署前检查；
+- 以非交互方式执行脚本（可在本机执行，也可经 SSH 执行）；
+- XHTTP 方案中为两个域名分别创作不同的多页面伪装站，并完成验证；
+- 切换方案和排障。
+
+文件采用通用的 `SKILL.md` 格式（YAML 头部 `name` / `description` 加 Markdown 正文），
+不依赖特定工具：
+
+- 会读取 `AGENTS.md` 的 agent（如 Codex、Cursor、GitHub Copilot 等）在本仓库中工作时，
+  会被根目录的 [`AGENTS.md`](AGENTS.md) 引导到这份说明；
+- 支持 skill 目录的工具可以直接加载 `skills/vless-deploy/`，仓库里已经为 Claude Code
+  准备了软链接 `.claude/skills/vless-deploy`，其他工具可以把这个目录复制或链接到
+  各自的 skill 目录；
+- 其他 agent 只要能读文件或网页，告诉它“按照 skills/vless-deploy/SKILL.md 执行”，或者
+  给它 raw 链接即可：
+  `https://raw.githubusercontent.com/MaplumeX/vless-reality/main/skills/vless-deploy/SKILL.md`。
+
+然后对 agent 说“帮我在 <服务器> 上部署 XHTTP 节点，域名是 …”。agent 只有在你确认后，
+才会使用 `--force` 覆盖已有配置，或停用 Caddy。
 
 ## 如何选择 REALITY 目标域名
 

@@ -702,7 +702,7 @@ EOF
   install -m 0644 "$config_tmp" "$CONFIG_FILE"
 }
 
-# 伪装站点留空，由用户自行填充；
+# 伪装站点留空，由用户（或 agent，见 skills/vless-deploy）自行填充；
 # 已存在的目录及其内容保持不动。
 prepare_site_dirs() {
   local domain dir
@@ -902,7 +902,7 @@ print_xhttp_result() {
   printf '伪装站点目录：%s/%s、%s/%s\n' "$SITE_ROOT" "$up_domain" "$SITE_ROOT" "$down_domain"
   print_status_hint xray caddy
   printf '\n'
-  warn "伪装站点目录为空时首页返回 404；请为两个域名分别放入不同的静态站点。"
+  warn "伪装站点目录为空时首页返回 404；请为两个域名分别放入不同的静态站点（可用 skills/vless-deploy 让 agent 生成）。"
 }
 
 main() {
