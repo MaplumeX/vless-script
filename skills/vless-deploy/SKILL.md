@@ -60,7 +60,12 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 - 用户有优选 IP 或优选域名，就加 `--cdn-address`；
 - 用户想在握手里隐藏自己的域名，就加 `--ech`。要告诉用户：客户端必须支持 ECH，否则连不上；
   ECH 只作用于经过 Cloudflare 的那一段；
+- 脚本默认启用 VLESS Encryption + Vision（`--vless-enc on`），所有链接都会带上 `encryption=` 和
+  `flow=`，需要较新的 Xray 内核。用户的客户端不支持时，加 `--vless-enc off`，并告诉用户这样
+  Cloudflare 能看到 UUID 和访问目标；
 - 执行脚本前，所有域名都必须是灰云，否则证书签不下来。
+
+不经过 CDN 时默认不启用 VLESS Encryption；用户明确想要 Vision 的填充时，可以加 `--vless-enc on`。
 
 hybrid 收集 `--up-domain` 和 `--down-domain`（建议用不同的主域名），可选 `--cdn-address`（不能是
 IPv6）。它不接受 `--cdn` 和 `--ech`。执行前要和用户确认 DNS：上行域名只配指向本机 IPv6 的 AAAA，
@@ -109,8 +114,8 @@ agent 没有交互终端，必须通过参数把选择全部传进去，否则�
 ```bash
 sudo bash ./install.sh --mode reality --domain <目标域名> [--address <地址>]
 sudo bash ./install.sh --mode xhttp --up-domain <上行域名> --down-domain <下行域名> \
-  [--cdn up [--cdn-address <优选地址>] [--ech]]
-sudo bash ./install.sh --mode xhttp --cdn full --domain <域名> [--cdn-address <优选地址>] [--ech]
+  [--cdn up [--cdn-address <优选地址>] [--ech]] [--vless-enc on|off]
+sudo bash ./install.sh --mode xhttp --cdn full --domain <域名> [--cdn-address <优选地址>] [--ech] [--vless-enc on|off]
 sudo bash ./install.sh --mode hybrid --up-domain <上行域名> --down-domain <下行域名> [--cdn-address <IPv4 优选地址>]
 ```
 
@@ -257,6 +262,8 @@ agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。�
     Xray 没在运行；
   - 客户端需要支持 xhttp 和 `extra.downloadSettings`；在 mihomo 中手动配置时要设置
     `client-fingerprint`，值与链接里的 `fp` 一致（默认 `chrome`）。mihomo 留空时会用原生 Go TLS。
+- 启用了 VLESS Encryption（链接里有 `encryption=mlkem768…`）的节点连不上时：先确认客户端内核
+  足够新，能识别 `encryption=` 和 `flow=xtls-rprx-vision`；旧客户端可以改用 `--vless-enc off` 重装。
 - hybrid 连不上时，除上面几项外：
   - 客户端内核是否足够新，能识别链接里的 `encryption=`、`flow=xtls-rprx-vision` 和 ECH；
   - 客户端网络是否同时有 IPv4 和 IPv6（`curl -6 https://api64.ipify.org`）；

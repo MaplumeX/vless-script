@@ -20,7 +20,8 @@
   随机路径；
 - XHTTP 方案通过系统包管理器安装 Caddy（Debian/Ubuntu 官方 apt 源、Fedora/RHEL 官方
   COPR、Alpine 和 openSUSE 系统源），自动申请证书，并为每个域名各准备一个空的伪装站点目录；
-- XHTTP 方案可选上行或全程经过 Cloudflare CDN，并可选 ECH，同时输出对应的 CDN 链接和
+- XHTTP 方案可选上行或全程经过 Cloudflare CDN，并可选 ECH；经过 CDN 时默认启用 VLESS Encryption
+  + Vision。同时输出对应的 CDN 链接和
   Cloudflare 设置清单；
 - 下载 Loyalsoldier 的 `geoip.dat` 和 `geosite.dat`，每周一 04:30 通过 Xray 自动更新；
 - 写入前使用 Xray 内核和 Caddy 校验配置；
@@ -57,6 +58,7 @@ XHTTP 方案：
 | 上行 | 上行域名，ALPN `h2` |
 | 下行 | 下行域名（`extra.downloadSettings`），ALPN `h2`；全程 CDN 时与上行同一域名 |
 | CDN | 可选，`--cdn up` 或 `--cdn full`（Cloudflare），可选 ECH |
+| VLESS 层 | 经过 CDN 时默认启用 VLESS Encryption + Vision，不经过时默认 `none`；可用 `--vless-enc on/off` 修改 |
 | 客户端指纹 | 默认 `chrome`，可用 `--fingerprint` 修改，含 `unsafe`（原生 Go TLS） |
 | 其他路径 | 各域名独立的伪装站点 `/var/www/<域名>`（默认为空，需自行填充） |
 
@@ -144,9 +146,9 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
   sudo bash install.sh
   sudo bash install.sh --mode reality --domain example.com [--address 203.0.113.10] [--force]
   sudo bash install.sh --mode xhttp --up-domain up.example.com --down-domain down.example.com
-                       [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--force]
+                       [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--vless-enc on|off] [--force]
   sudo bash install.sh --mode xhttp --cdn full --domain cdn.example.com
-                       [--cdn-address 104.16.0.1] [--ech] [--force]
+                       [--cdn-address 104.16.0.1] [--ech] [--vless-enc on|off] [--force]
   sudo bash install.sh --mode hybrid --up-domain up.example.com --down-domain down.example.net
                        [--cdn-address 104.16.0.1] [--force]
 
@@ -163,6 +165,8 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
       --ech          为 CDN 链接启用 ECH，需要客户端支持
       --ech-config   ECH 配置来源，默认 cloudflare-ech.com+https://dns.alidns.com/dns-query；
                      指定时自动启用 --ech
+      --vless-enc    XHTTP 方案是否启用 VLESS Encryption + Vision（on / off），经过 CDN 时默认 on，
+                     否则默认 off；hybrid 方案固定启用
       --fingerprint  客户端 TLS 指纹，默认 chrome；unsafe（原生 Go TLS）仅 XHTTP 可用
   -f, --force        无交互覆盖已有 Xray / Caddy 配置
   -h, --help         显示帮助
@@ -342,11 +346,31 @@ SNI（你的域名）加密放进 ClientHello。外部只能看到所有 Cloudfl
   参数即可。
 - ECH 由 Cloudflare 终止，所以域名还是灰云时，带 ECH 的链接连不通。
 
+#### VLESS Encryption + Vision
+
+Cloudflare 会终止外层 TLS。如果 VLESS 本身不加密（`decryption: none`），Cloudflare 就能看到经过它的
+请求中的 VLESS 头部，包括 UUID 和每条连接的目标地址。因此经过 CDN 时，脚本默认启用：
+
+- **VLESS Encryption**（`mlkem768x25519plus`，X25519 认证，`xorpub` 外观）：VLESS 头部和数据在客户端
+  与 Xray 之间端到端加密，Cloudflare 剥掉 TLS 后只能看到密文；
+- **Vision**（`xtls-rprx-vision`）：填充内层 TLS 握手的长度，减轻 TLS in TLS 特征。在 XHTTP 上，
+  Vision 只能和 VLESS Encryption 一起使用。
+
+交互模式下会询问一次（默认启用），也可以用 `--vless-enc on|off` 指定。需要知道：
+
+- 直连链接和 CDN 链接共用同一个入站，所以**一次安装的所有链接都会一起启用**，链接里都带有
+  `encryption=` 和 `flow=xtls-rprx-vision`；
+- 客户端需要较新的 Xray 内核。要兼容不支持的客户端，可以加 `--vless-enc off`；
+- 不经过 CDN 时默认不启用，因为 TLS 本来就在自己的 Caddy 上终止。想要 Vision 的填充，也可以用
+  `--vless-enc on` 打开。
+
+本仓库在本地验证过：启用后直连链接（stream-up）、上行 CDN 链接（packet-up + `downloadSettings`）和
+全程 CDN 链接（packet-up）都能正常上传和下载。
+
 #### 需要知道的几点
 
-- Cloudflare 会终止外层 TLS，而 VLESS 本身不加密（`decryption: none`）。因此 Cloudflare 能看到
-  经过它的请求中的 VLESS 头部，包括 UUID 和每条连接的目标地址。访问 HTTPS 网站时，网页内容仍由
-  内层 TLS 保护。
+- 用 `--vless-enc off` 关闭 VLESS Encryption 时，Cloudflare 能看到 VLESS 头部（UUID 和目标地址）。
+  访问 HTTPS 网站时，网页内容仍由内层 TLS 保护。
 - `--cdn up` 时下行直连，服务器 IP 并没有被隐藏。这种方式的目的是让上下行难以关联，而不是隐藏 IP。
 - 全程 CDN 时所有流量都由 Cloudflare 转发。免费套餐在国内晚高峰可能较慢，长期大流量使用也可能
   违反 Cloudflare 的服务条款。

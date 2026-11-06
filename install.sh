@@ -34,6 +34,7 @@ cdn_address=""
 ech=""
 ech_config="$DEFAULT_ECH_CONFIG"
 site_domains=()
+vless_enc=""
 vless_decryption="none"
 vless_encryption="none"
 vless_flow=""
@@ -74,9 +75,9 @@ usage() {
   sudo bash install.sh
   sudo bash install.sh --mode reality --domain example.com [--address 203.0.113.10] [--force]
   sudo bash install.sh --mode xhttp --up-domain up.example.com --down-domain down.example.com
-                       [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--force]
+                       [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--vless-enc on|off] [--force]
   sudo bash install.sh --mode xhttp --cdn full --domain cdn.example.com
-                       [--cdn-address 104.16.0.1] [--ech] [--force]
+                       [--cdn-address 104.16.0.1] [--ech] [--vless-enc on|off] [--force]
   sudo bash install.sh --mode hybrid --up-domain up.example.com --down-domain down.example.com
                        [--cdn-address 104.16.0.1] [--force]
 
@@ -100,6 +101,9 @@ usage() {
       --ech          为 CDN 链接启用 ECH（隐藏真实域名，需要客户端支持）
       --ech-config   ECH 配置来源，默认 cloudflare-ech.com+https://dns.alidns.com/dns-query；
                      也可填 base64 的 ECHConfigList。指定时自动启用 --ech
+      --vless-enc    xhttp 方案是否启用 VLESS Encryption + Vision（on / off）；
+                     经过 CDN 时默认 on，不经过时默认 off。所有链接一起生效，
+                     需要较新的 Xray 内核。hybrid 固定启用
       --fingerprint  写入导入链接的客户端 TLS 指纹，默认 chrome；可选 chrome、firefox、
                      safari、ios、android、edge、360、qq、random、randomized、
                      randomizednoalpn，以及仅 xhttp 方案可用的 unsafe（原生 Go TLS）
@@ -158,6 +162,11 @@ while (($# > 0)); do
       (($# >= 2)) || die "$1 缺少参数"
       ech="true"
       ech_config="$2"
+      shift 2
+      ;;
+    --vless-enc)
+      (($# >= 2)) || die "$1 缺少参数"
+      vless_enc="${2,,}"
       shift 2
       ;;
     --fingerprint)
@@ -295,21 +304,23 @@ EOF
   if [[ "$mode" == "reality" ]]; then
     [[ -z "$up_domain" && -z "$down_domain" ]] ||
       warn "--up-domain/--down-domain 仅用于 xhttp 方案，已忽略。"
-    [[ -z "$cdn_mode" && -z "$cdn_address" && -z "$ech" ]] ||
-      warn "--cdn/--cdn-address/--ech 仅用于 xhttp 方案，已忽略。"
+    [[ -z "$cdn_mode" && -z "$cdn_address" && -z "$ech" && -z "$vless_enc" ]] ||
+      warn "--cdn/--cdn-address/--ech/--vless-enc 仅用于 xhttp 方案，已忽略。"
     cdn_mode=""
     cdn_address=""
     ech=""
+    vless_enc=""
   elif [[ "$mode" == "hybrid" ]]; then
     [[ -z "$reality_domain" ]] || warn "--domain 不用于 hybrid 方案，已忽略。"
     [[ -z "$server_address" ]] || warn "--address 仅用于 reality 方案，已忽略。"
     [[ -z "$cdn_mode" ]] || warn "hybrid 方案固定为下行经过 Cloudflare，--cdn 已忽略。"
     [[ "$ech" != "true" ]] || info "hybrid 方案固定启用 ECH。"
+    [[ "$vless_enc" != "off" ]] || warn "hybrid 方案固定启用 VLESS Encryption + Vision，--vless-enc off 已忽略。"
     reality_domain=""
     # hybrid 是固定组合：下行走 CDN + ECH，VLESS 层启用 Encryption + Vision。
     cdn_mode="down"
     ech="true"
-    vless_flow="$VISION_FLOW"
+    vless_enc="on"
   else
     [[ -z "$server_address" ]] || warn "--address 仅用于 reality 方案，已忽略。"
   fi
@@ -481,6 +492,47 @@ require_public_ipv6() {
   [[ "$public_ipv6" == *:* ]] ||
     die "未检测到本机公网 IPv6；hybrid 方案的上行需要 IPv6。请确认服务器已分配公网 IPv6，且 IPv6 出站可用。"
   info "本机公网 IPv6：${public_ipv6}"
+}
+
+# 入站同时服务直连和 CDN 链接，启用后所有链接都必须带 encryption 和 flow。
+prompt_vless_enc() {
+  local choice=""
+
+  case "$vless_enc" in
+    on | off) ;;
+    "")
+      if [[ "$cdn_mode" == "none" ]]; then
+        vless_enc="off"
+      elif has_tty; then
+        cat >/dev/tty <<'MENU'
+
+是否启用 VLESS Encryption + Vision？启用后 Cloudflare 看不到 UUID 和访问目标，
+Vision 还能减轻 TLS in TLS 特征；但所有链接都需要较新的 Xray 内核。
+  1. 是（推荐，默认）
+  2. 否（兼容不支持的客户端）
+
+MENU
+        while [[ -z "$vless_enc" ]]; do
+          read -r -p "请输入数字 [1-2，默认 1]: " choice </dev/tty
+          case "$choice" in
+            "" | 1) vless_enc="on" ;;
+            2) vless_enc="off" ;;
+            *) warn "请输入 1 或 2。" ;;
+          esac
+        done
+      else
+        vless_enc="on"
+      fi
+      ;;
+    *) die "--vless-enc 只接受 on 或 off：${vless_enc}" ;;
+  esac
+
+  if [[ "$vless_enc" == "on" ]]; then
+    vless_flow="$VISION_FLOW"
+    info "启用 VLESS Encryption + Vision。"
+  else
+    vless_flow=""
+  fi
 }
 
 install_dependencies() {
@@ -751,7 +803,7 @@ generate_credentials() {
     [[ "$xhttp_path" =~ ^/[0-9a-f]{16}$ ]] || die "XHTTP 路径生成失败。"
   fi
 
-  if [[ "$mode" == "hybrid" ]]; then
+  if [[ "$vless_enc" == "on" ]]; then
     key_output="$("$XRAY_BIN" vlessenc)"
     # 取 X25519 认证的一对，导入链接更短；临时密钥交换本身已是后量子安全的。
     # xorpub 让经过 CDN 的数据没有固定结构。
@@ -1284,6 +1336,9 @@ print_xhttp_result() {
       printf '  客户端所在网络需同时有 IPv4 和 IPv6。\n\n'
       ;;
   esac
+  if [[ "$mode" == "xhttp" && "$vless_enc" == "on" ]]; then
+    printf '客户端要求：所有链接都启用了 VLESS Encryption + Vision，需要较新的 Xray 内核。\n\n'
+  fi
   printf 'Xray 配置：%s\n' "$CONFIG_FILE"
   printf 'Caddy 配置：%s\n' "$CADDY_FILE"
   printf '伪装站点目录：%s\n' "$site_dirs"
@@ -1312,6 +1367,7 @@ main() {
     [[ "$mode" == "hybrid" ]] || prompt_cdn_mode
     prompt_xhttp_domains
     prompt_cdn_options
+    prompt_vless_enc
   fi
   check_ports
   confirm_overwrite
