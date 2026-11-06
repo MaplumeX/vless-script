@@ -19,12 +19,14 @@ readonly CADDY_MARK="# Managed by vless-reality install.sh"
 readonly SITE_ROOT="/var/www"
 readonly PORT="443"
 readonly XHTTP_LOCAL_PORT="30001"
+readonly FINGERPRINTS="chrome firefox safari ios android edge 360 qq random randomized randomizednoalpn unsafe"
 
 mode=""
 reality_domain=""
 up_domain=""
 down_domain=""
 server_address=""
+fingerprint="chrome"
 force="false"
 init_system=""
 installer_tmp=""
@@ -69,6 +71,9 @@ usage() {
   -a, --address      REALITY 模式下客户端连接的服务器公网 IP 或域名；默认自动探测
       --up-domain    XHTTP 模式的上行域名（需解析到本机）
       --down-domain  XHTTP 模式的下行域名（需解析到本机，且与上行域名不同）
+      --fingerprint  写入导入链接的客户端 TLS 指纹，默认 chrome；可选 chrome、firefox、
+                     safari、ios、android、edge、360、qq、random、randomized、
+                     randomizednoalpn，以及仅 xhttp 方案可用的 unsafe（原生 Go TLS）
   -f, --force        无交互覆盖已有 Xray / Caddy 配置
   -h, --help         显示帮助
 
@@ -102,6 +107,11 @@ while (($# > 0)); do
     --down-domain)
       (($# >= 2)) || die "$1 缺少参数"
       down_domain="$2"
+      shift 2
+      ;;
+    --fingerprint)
+      (($# >= 2)) || die "$1 缺少参数"
+      fingerprint="${2,,}"
       shift 2
       ;;
     -f | --force)
@@ -142,6 +152,14 @@ validate_address() {
     *'/'* | *'?'* | *'#'* | *'@'* | *'['* | *']'*) return 1 ;;
   esac
   [[ "$address" =~ ^[A-Za-z0-9:.-]+$ ]]
+}
+
+validate_fingerprint() {
+  [[ " ${FINGERPRINTS} " == *" ${fingerprint} "* ]] ||
+    die "不支持的指纹：${fingerprint}（可选：${FINGERPRINTS}）"
+  if [[ "$mode" == "reality" && "$fingerprint" == "unsafe" ]]; then
+    die "REALITY 依赖 uTLS，不能使用 unsafe 指纹。"
+  fi
 }
 
 has_tty() {
@@ -868,7 +886,7 @@ print_reality_result() {
   local import_link
 
   [[ "$uri_host" == *:* ]] && uri_host="[${uri_host}]"
-  import_link="vless://${uuid}@${uri_host}:${PORT}?encryption=none&security=reality&sni=${reality_domain}&fp=chrome&pbk=${public_key}&sid=${short_id}&type=tcp&flow=xtls-rprx-vision#Xray-REALITY"
+  import_link="vless://${uuid}@${uri_host}:${PORT}?encryption=none&security=reality&sni=${reality_domain}&fp=${fingerprint}&pbk=${public_key}&sid=${short_id}&type=tcp&flow=xtls-rprx-vision#Xray-REALITY"
 
   printf '\n\033[1;32m安装完成，Xray 正在运行。\033[0m\n\n'
   printf '服务器地址：%s\n' "$server_address"
@@ -876,7 +894,8 @@ print_reality_result() {
   printf 'UUID：%s\n' "$uuid"
   printf 'REALITY 公钥：%s\n' "$public_key"
   printf 'Short ID：%s\n' "$short_id"
-  printf 'SNI：%s\n\n' "$reality_domain"
+  printf 'SNI：%s\n' "$reality_domain"
+  printf '客户端指纹：%s\n\n' "$fingerprint"
   printf '客户端导入链接：\n%s\n\n' "$import_link"
   printf '服务端配置：%s\n' "$CONFIG_FILE"
   print_status_hint xray
@@ -885,9 +904,9 @@ print_reality_result() {
 print_xhttp_result() {
   local extra import_link
 
-  # fingerprint=unsafe 让 Xray 客户端使用原生 Go TLS，不做 uTLS 浏览器指纹模拟。
-  extra="{\"downloadSettings\":{\"address\":\"${down_domain}\",\"port\":${PORT},\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"${down_domain}\",\"alpn\":[\"h2\"],\"fingerprint\":\"unsafe\"},\"xhttpSettings\":{\"path\":\"${xhttp_path}\"}}}"
-  import_link="vless://${uuid}@${up_domain}:${PORT}?encryption=none&security=tls&sni=${up_domain}&alpn=h2&fp=unsafe&type=xhttp&path=$(urlencode "$xhttp_path")&mode=stream-up&extra=$(urlencode "$extra")#Xray-XHTTP"
+  # 显式写出指纹：Xray 系客户端留空时默认 chrome，mihomo 留空时却是原生 Go TLS。
+  extra="{\"downloadSettings\":{\"address\":\"${down_domain}\",\"port\":${PORT},\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"${down_domain}\",\"alpn\":[\"h2\"],\"fingerprint\":\"${fingerprint}\"},\"xhttpSettings\":{\"path\":\"${xhttp_path}\"}}}"
+  import_link="vless://${uuid}@${up_domain}:${PORT}?encryption=none&security=tls&sni=${up_domain}&alpn=h2&fp=${fingerprint}&type=xhttp&path=$(urlencode "$xhttp_path")&mode=stream-up&extra=$(urlencode "$extra")#Xray-XHTTP"
 
   printf '\n\033[1;32m安装完成，Xray 与 Caddy 正在运行。\033[0m\n\n'
   printf '上行域名：%s\n' "$up_domain"
@@ -895,7 +914,8 @@ print_xhttp_result() {
   printf '端口：%s\n' "$PORT"
   printf 'UUID：%s\n' "$uuid"
   printf 'XHTTP 路径：%s\n' "$xhttp_path"
-  printf '传输模式：stream-up（上下行分离）\n\n'
+  printf '传输模式：stream-up（上下行分离）\n'
+  printf '客户端指纹：%s\n\n' "$fingerprint"
   printf '客户端导入链接：\n%s\n\n' "$import_link"
   printf 'Xray 配置：%s\n' "$CONFIG_FILE"
   printf 'Caddy 配置：%s\n' "$CADDY_FILE"
@@ -911,6 +931,7 @@ main() {
 
   detect_init_system
   select_mode
+  validate_fingerprint
   if [[ "$mode" == "reality" ]]; then
     prompt_domain
     validate_domain "$reality_domain" || die "REALITY 域名格式不正确。"

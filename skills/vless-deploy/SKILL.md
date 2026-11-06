@@ -39,11 +39,16 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 用户没说用哪种方案时，用一两句话说明区别后让用户选：
 
 - REALITY：无需域名，部署最快；依赖 uTLS 指纹模拟和借用目标站点。
-- XHTTP：需要两个域名，自己的真实证书和原生 TLS，上行和下行拆到两条连接；
+- XHTTP：需要两个域名，使用自己的真实证书，上行和下行拆到两条连接；
   多一层 Caddy，开销略高。
 
 然后收集参数：REALITY 要一个目标域名；XHTTP 要上行域名和下行域名（两者必须不同）。
 REALITY 方案在 NAT 或多出口环境下，可以额外用 `--address` 指定客户端实际连接的地址。
+
+客户端 TLS 指纹默认是 `chrome`，这是 Xray 官方推荐的主流做法，一般不用改。用户明确
+希望不用 uTLS 时，XHTTP 方案可以加 `--fingerprint unsafe`（原生 Go TLS）。这时要告诉
+用户：Xray 官方不推荐这样做，非 Xray 内核的客户端也可能不认识这个值。REALITY 方案
+不能用 `unsafe`。连接出现握手卡顿时，可以试试 `--fingerprint firefox`。
 
 ## 2. 部署前检查（只读）
 
@@ -189,8 +194,8 @@ done   # 没有输出即全部正常
   - 证书没签下来，通常是 DNS 没生效，或 80/443 入站没放行；
   - 用 `curl --resolve <域名>:443:127.0.0.1 https://<域名><路径>/x` 测试，返回 502 说明
     Xray 没在运行；
-  - 客户端需要支持 xhttp 和 `extra.downloadSettings`；在 mihomo 中手动配置时不要设置
-    `client-fingerprint`。
+  - 客户端需要支持 xhttp 和 `extra.downloadSettings`；在 mihomo 中手动配置时要设置
+    `client-fingerprint`，值与链接里的 `fp` 一致（默认 `chrome`）。mihomo 留空时会用原生 Go TLS。
 
 ## 6. 向用户汇报
 

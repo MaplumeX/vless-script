@@ -6,7 +6,7 @@
 1. **VLESS + REALITY + Vision**：Xray 直接监听 443，借用目标站点的 TLS 握手，无需自有域名。
 2. **VLESS + XHTTP + TLS（上下行分离）**：Caddy 在 443 上用自己域名的真实证书终止 TLS，
    按路径把 XHTTP 请求以 h2c 转给只监听本地端口的 Xray；上行和下行分别走两个域名、
-   两条互不相关的连接。客户端使用原生 TLS（`fp=unsafe`），不做 uTLS 指纹模拟。
+   两条互不相关的连接。
 
 ## 功能
 
@@ -37,7 +37,7 @@ REALITY 方案：
 | 监听地址 | `::` |
 | 监听端口 | `443` |
 | REALITY 回落入口 | `127.0.0.1:4431` |
-| 客户端指纹 | `chrome` |
+| 客户端指纹 | 默认 `chrome`，可用 `--fingerprint` 修改 |
 
 客户端导入链接使用 `type=tcp`，与服务端的 `network: raw` 兼容，并能被更多客户端
 识别。
@@ -52,7 +52,7 @@ XHTTP 方案：
 | 回源 | `127.0.0.1:30001`，h2c，`flush_interval -1` |
 | 上行 | 上行域名，ALPN `h2` |
 | 下行 | 下行域名（`extra.downloadSettings`），ALPN `h2` |
-| 客户端指纹 | `unsafe`（原生 TLS） |
+| 客户端指纹 | 默认 `chrome`，可用 `--fingerprint` 修改，含 `unsafe`（原生 Go TLS） |
 | 其他路径 | 各域名独立的伪装站点 `/var/www/<域名>`（默认为空，需自行填充） |
 
 两种方案共用的路由规则：国内域名与 IP 阻断，Google 及 Google CN 规则直连。
@@ -131,6 +131,7 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
   -a, --address      REALITY 方案中客户端连接的服务器公网 IP 或域名
       --up-domain    XHTTP 方案的上行域名
       --down-domain  XHTTP 方案的下行域名，需与上行域名不同
+      --fingerprint  客户端 TLS 指纹，默认 chrome；unsafe（原生 Go TLS）仅 XHTTP 可用
   -f, --force        无交互覆盖已有 Xray / Caddy 配置
   -h, --help         显示帮助
 ```
@@ -214,8 +215,17 @@ chmod -R u=rwX,go=rX /var/www/up.example.com /var/www/down.example.com
 ### 客户端
 
 导入链接中的下行配置放在 `extra` 参数里（URL 编码的 JSON，包含 `downloadSettings`），
-需要较新的 Xray 系客户端或 mihomo 才能识别。链接使用 `fp=unsafe` 表示原生 TLS；
-在 mihomo 中手动配置时，不要设置 `client-fingerprint`。
+需要较新的 Xray 系客户端或 mihomo 才能识别。
+
+链接中的上行（`fp`）和下行（`downloadSettings.tlsSettings.fingerprint`）都会写明指纹，
+默认为 `chrome`。这是 Xray 官方推荐的、也是主流的做法。必须写明，是因为不同客户端
+对留空的处理相反：Xray 系客户端留空时用 `chrome`，mihomo 留空时却用原生 Go TLS。
+在 mihomo 中手动配置时，请设置 `client-fingerprint: chrome`，与链接保持一致。
+
+如果你认同“完全不用 uTLS、只用原生 TLS”的思路，可以加 `--fingerprint unsafe`。
+`unsafe` 并不会降低加密强度或跳过证书校验，只是 ClientHello 会呈现 Go 程序的
+特征，不再模仿浏览器。Xray 官方不推荐这样做，非 Xray 内核的客户端也可能不认识这个值。
+REALITY 方案依赖 uTLS，不能使用 `unsafe`。
 
 ### 从一种方案切换到另一种
 
