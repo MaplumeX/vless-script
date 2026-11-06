@@ -3,7 +3,8 @@
 本仓库是一个 Bash 一键安装脚本 `install.sh`，在 Linux 服务器上部署 VLESS 节点，有两种方案：
 
 - `reality`：VLESS + REALITY + Vision，Xray 直接监听 443；
-- `xhttp`：VLESS + XHTTP + TLS，由 Caddy 在前面终止 TLS，上行和下行分别走两个域名。
+- `xhttp`：VLESS + XHTTP + TLS，由 Caddy 在前面终止 TLS。上行和下行通常分别走两个域名，
+  也可以让上行或全程经过 Cloudflare CDN（`--cdn up|full`），并可选 ECH。
 
 用户文档见 `README.md`。
 
