@@ -19,6 +19,7 @@ readonly CADDY_MARK="# Managed by vless-reality install.sh"
 readonly SITE_ROOT="/var/www"
 readonly PORT="443"
 readonly XHTTP_LOCAL_PORT="30001"
+readonly VISION_FLOW="xtls-rprx-vision"
 readonly DEFAULT_ECH_CONFIG="cloudflare-ech.com+https://dns.alidns.com/dns-query"
 readonly FINGERPRINTS="chrome firefox safari ios android edge 360 qq random randomized randomizednoalpn unsafe"
 
@@ -33,6 +34,10 @@ cdn_address=""
 ech=""
 ech_config="$DEFAULT_ECH_CONFIG"
 site_domains=()
+vless_decryption="none"
+vless_encryption="none"
+vless_flow=""
+public_ipv6=""
 force="false"
 init_system=""
 installer_tmp=""
@@ -72,20 +77,26 @@ usage() {
                        [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--force]
   sudo bash install.sh --mode xhttp --cdn full --domain cdn.example.com
                        [--cdn-address 104.16.0.1] [--ech] [--force]
+  sudo bash install.sh --mode hybrid --up-domain up.example.com --down-domain down.example.com
+                       [--cdn-address 104.16.0.1] [--force]
 
 参数：
-  -m, --mode         安装方案：reality（VLESS + REALITY + Vision）或
-                     xhttp（VLESS + XHTTP + TLS，Caddy 前置）
+  -m, --mode         安装方案：reality（VLESS + REALITY + Vision）、
+                     xhttp（VLESS + XHTTP + TLS，Caddy 前置）或
+                     hybrid（VLESS Encryption + Vision + XHTTP：上行 IPv6 直连，
+                     下行 IPv4 经 Cloudflare + ECH）
   -d, --domain       REALITY 伪装站点域名；--cdn full 时为经过 Cloudflare 的那个域名
                      （不要带协议、端口或路径）
   -a, --address      REALITY 模式下客户端连接的服务器公网 IP 或域名；默认自动探测
-      --up-domain    XHTTP 模式的上行域名（需解析到本机）
-      --down-domain  XHTTP 模式的下行域名（需解析到本机，且与上行域名不同）
+      --up-domain    xhttp / hybrid 的上行域名（需解析到本机；hybrid 只配 AAAA）
+      --down-domain  xhttp / hybrid 的下行域名（需解析到本机，且与上行域名不同；
+                     hybrid 只配 A，安装后切换为橙云）
       --cdn          XHTTP 模式的 CDN（Cloudflare）方式：
                        none  两个域名都直连（默认）
                        up    上行域名经过 CDN、下行域名直连，另输出全程 CDN 应急链接
                        full  只用一个域名，上下行都经过 CDN
       --cdn-address  CDN 链接使用的优选 IP 或优选域名；默认使用经过 CDN 的域名
+                     （hybrid 只接受 IPv4 优选 IP 或域名）
       --ech          为 CDN 链接启用 ECH（隐藏真实域名，需要客户端支持）
       --ech-config   ECH 配置来源，默认 cloudflare-ech.com+https://dns.alidns.com/dns-query；
                      也可填 base64 的 ECHConfigList。指定时自动启用 --ech
@@ -96,7 +107,9 @@ usage() {
   -h, --help         显示帮助
 
 未指定 --mode 时：给出 --cdn、--up-domain 或 --down-domain 视为 xhttp，
-只给出 --domain 视为 reality，否则在终端中显示菜单供选择。
+只给出 --domain 视为 reality，否则在终端中显示菜单供选择。hybrid 需要显式指定
+--mode hybrid 或在菜单中选择；它固定启用 VLESS Encryption、Vision 和 ECH，
+不接受 --cdn 和 --ech。
 EOF
 }
 
@@ -250,8 +263,8 @@ select_mode() {
 
   if [[ -n "$mode" ]]; then
     case "$mode" in
-      reality | xhttp) ;;
-      *) die "未知安装方案：${mode}（可选 reality 或 xhttp）" ;;
+      reality | xhttp | hybrid) ;;
+      *) die "未知安装方案：${mode}（可选 reality、xhttp 或 hybrid）" ;;
     esac
   elif [[ -n "$cdn_mode" || -n "$up_domain" || -n "$down_domain" ]]; then
     mode="xhttp"
@@ -264,14 +277,17 @@ select_mode() {
 请选择安装方案：
   1. VLESS + REALITY + Vision（Xray 直接监听 443，借用目标站点的 TLS）
   2. VLESS + XHTTP + TLS（Caddy 前置终止 TLS；可上下行分离，也可经过 Cloudflare CDN）
+  3. VLESS Encryption + Vision + XHTTP：上行 IPv6 直连，下行 IPv4 经 Cloudflare + ECH
+     （需要两个域名和本机公网 IPv6）
 
 EOF
     while [[ -z "$mode" ]]; do
-      read -r -p "请输入数字 [1-2]: " choice </dev/tty
+      read -r -p "请输入数字 [1-3]: " choice </dev/tty
       case "$choice" in
         1) mode="reality" ;;
         2) mode="xhttp" ;;
-        *) warn "请输入 1 或 2。" ;;
+        3) mode="hybrid" ;;
+        *) warn "请输入 1、2 或 3。" ;;
       esac
     done
   fi
@@ -284,6 +300,16 @@ EOF
     cdn_mode=""
     cdn_address=""
     ech=""
+  elif [[ "$mode" == "hybrid" ]]; then
+    [[ -z "$reality_domain" ]] || warn "--domain 不用于 hybrid 方案，已忽略。"
+    [[ -z "$server_address" ]] || warn "--address 仅用于 reality 方案，已忽略。"
+    [[ -z "$cdn_mode" ]] || warn "hybrid 方案固定为下行经过 Cloudflare，--cdn 已忽略。"
+    [[ "$ech" != "true" ]] || info "hybrid 方案固定启用 ECH。"
+    reality_domain=""
+    # hybrid 是固定组合：下行走 CDN + ECH，VLESS 层启用 Encryption + Vision。
+    cdn_mode="down"
+    ech="true"
+    vless_flow="$VISION_FLOW"
   else
     [[ -z "$server_address" ]] || warn "--address 仅用于 reality 方案，已忽略。"
   fi
@@ -389,17 +415,30 @@ prompt_xhttp_domains() {
   site_domains=("$up_domain" "$down_domain")
 }
 
+# 经过 CDN 的域名：hybrid（down）是下行域名，其余是上行域名。
+cdn_domain() {
+  if [[ "$cdn_mode" == "down" ]]; then
+    printf '%s' "$down_domain"
+  else
+    printf '%s' "$up_domain"
+  fi
+}
+
 prompt_cdn_options() {
-  local choice=""
+  local choice="" cdn_dom
 
   [[ "$cdn_mode" != "none" ]] || return 0
+  cdn_dom="$(cdn_domain)"
 
   if [[ -z "$cdn_address" ]] && has_tty; then
-    read -r -p "CDN 链接使用的优选 IP 或域名（直接回车则使用 ${up_domain}）: " cdn_address </dev/tty
+    read -r -p "CDN 链接使用的优选 IP 或域名（直接回车则使用 ${cdn_dom}）: " cdn_address </dev/tty
   fi
   cdn_address="${cdn_address%.}"
   if [[ -n "$cdn_address" ]]; then
     validate_address "$cdn_address" || die "优选地址格式不正确：${cdn_address}"
+    if [[ "$cdn_mode" == "down" && "$cdn_address" == *:* ]]; then
+      die "hybrid 方案的下行固定经 IPv4 连接 Cloudflare，--cdn-address 不能是 IPv6 地址。"
+    fi
   fi
 
   if [[ -z "$ech" ]]; then
@@ -428,12 +467,20 @@ MENU
     validate_ech_config || die "ECH 配置格式不正确：${ech_config}"
   fi
 
-  if [[ "$cdn_mode" == "up" ]]; then
-    info "上行走 CDN、下行直连；CDN 链接地址：${cdn_address:-$up_domain}"
-  else
-    info "全程走 CDN；CDN 链接地址：${cdn_address:-$up_domain}"
-  fi
+  case "$cdn_mode" in
+    up) info "上行走 CDN、下行直连；CDN 链接地址：${cdn_address:-$cdn_dom}" ;;
+    full) info "全程走 CDN；CDN 链接地址：${cdn_address:-$cdn_dom}" ;;
+    down) info "上行 IPv6 直连、下行 IPv4 经 CDN；下行连接地址：${cdn_address:-$cdn_dom}" ;;
+  esac
   [[ "$ech" != "true" ]] || info "CDN 链接启用 ECH：${ech_config}"
+}
+
+# hybrid 的上行固定走 IPv6，没有公网 IPv6 就无法使用。
+require_public_ipv6() {
+  public_ipv6="$(curl -6fsS --max-time 8 https://api64.ipify.org 2>/dev/null || true)"
+  [[ "$public_ipv6" == *:* ]] ||
+    die "未检测到本机公网 IPv6；hybrid 方案的上行需要 IPv6。请确认服务器已分配公网 IPv6，且 IPv6 出站可用。"
+  info "本机公网 IPv6：${public_ipv6}"
 }
 
 install_dependencies() {
@@ -488,7 +535,7 @@ detect_public_address() {
 
 # 仅提醒，不中断：域名可能经 CDN 或尚在 DNS 生效中。
 check_domain_dns() {
-  local domain resolved ip4 ip6 is_local
+  local domain resolved ip4 ip6 is_local cdn_dom
 
   if ! command -v getent >/dev/null 2>&1; then
     warn "未找到 getent，跳过域名解析检查；请确认域名都已解析到本机。"
@@ -496,6 +543,7 @@ check_domain_dns() {
   fi
   ip4="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
   ip6="$(curl -6fsS --max-time 8 https://api64.ipify.org 2>/dev/null || true)"
+  cdn_dom="$(cdn_domain)"
 
   for domain in "${site_domains[@]}"; do
     # musl 的 getent 可能不支持 ahosts，失败时退回 hosts。
@@ -511,7 +559,7 @@ check_domain_dns() {
       is_local="true"
     fi
 
-    if [[ "$cdn_mode" != "none" && "$domain" == "$up_domain" ]]; then
+    if [[ "$cdn_mode" != "none" && "$domain" == "$cdn_dom" ]]; then
       if [[ "$is_local" == "true" ]]; then
         info "${domain} 当前直连本机（灰云），适合首次签发证书；安装完成后再切换为橙云。"
       else
@@ -519,10 +567,22 @@ check_domain_dns() {
       fi
     elif [[ "$is_local" == "true" ]]; then
       info "${domain} 已解析到本机。"
-    elif [[ "$cdn_mode" == "up" ]]; then
-      warn "${domain} 是直连的下行域名，但解析结果（$(tr '\n' ' ' <<<"$resolved")）不包含本机公网地址（${ip4:-无 IPv4} ${ip6:-无 IPv6}）；请确认它保持灰云并指向本机。"
+    elif [[ "$cdn_mode" == "up" || "$cdn_mode" == "down" ]]; then
+      warn "${domain} 是直连的域名，但解析结果（$(tr '\n' ' ' <<<"$resolved")）不包含本机公网地址（${ip4:-无 IPv4} ${ip6:-无 IPv6}）；请确认它保持灰云并指向本机。"
     else
       warn "${domain} 的解析结果（$(tr '\n' ' ' <<<"$resolved")）不包含本机公网地址（${ip4:-无 IPv4} ${ip6:-无 IPv6}）；若未使用 CDN，证书申请会失败。"
+    fi
+
+    [[ "$mode" == "hybrid" ]] || continue
+    if [[ "$domain" == "$up_domain" ]]; then
+      if grep -qv ':' <<<"$resolved"; then
+        warn "${domain} 存在 A 记录；hybrid 方案的上行域名应当只配 AAAA，否则上行可能改走 IPv4。"
+      fi
+      if [[ -z "$ip6" ]] || ! grep -qxF "$ip6" <<<"$resolved"; then
+        warn "${domain} 没有解析到本机公网 IPv6（${ip6:-未检测到}）；上行将无法直连。"
+      fi
+    elif [[ -n "$ip6" ]] && grep -qxF "$ip6" <<<"$resolved"; then
+      warn "${domain} 存在指向本机的 AAAA 记录；hybrid 方案的下行域名应当只配 A，让 Cloudflare 经 IPv4 回源。"
     fi
   done
 }
@@ -690,6 +750,18 @@ generate_credentials() {
     xhttp_path="/$(openssl rand -hex 8)"
     [[ "$xhttp_path" =~ ^/[0-9a-f]{16}$ ]] || die "XHTTP 路径生成失败。"
   fi
+
+  if [[ "$mode" == "hybrid" ]]; then
+    key_output="$("$XRAY_BIN" vlessenc)"
+    # 取 X25519 认证的一对，导入链接更短；临时密钥交换本身已是后量子安全的。
+    # xorpub 让经过 CDN 的数据没有固定结构。
+    vless_decryption="$(awk '/X25519/ {f = 1} f && /"decryption"/ {print; exit}' <<<"$key_output" | cut -d'"' -f4)"
+    vless_encryption="$(awk '/X25519/ {f = 1} f && /"encryption"/ {print; exit}' <<<"$key_output" | cut -d'"' -f4)"
+    vless_decryption="${vless_decryption/.native./.xorpub.}"
+    vless_encryption="${vless_encryption/.native./.xorpub.}"
+    [[ "$vless_decryption" == mlkem768x25519plus.xorpub.* &&
+      "$vless_encryption" == mlkem768x25519plus.xorpub.* ]] || die "VLESS Encryption 密钥生成失败。"
+  fi
 }
 
 reality_inbounds_json() {
@@ -769,6 +841,10 @@ EOF
 }
 
 xhttp_inbounds_json() {
+  local flow_line=""
+
+  [[ -z "$vless_flow" ]] || flow_line=",
+            \"flow\": \"${vless_flow}\""
   cat <<EOF
     {
       "tag": "xhttp-in",
@@ -778,10 +854,10 @@ xhttp_inbounds_json() {
       "settings": {
         "clients": [
           {
-            "id": "${uuid}"
+            "id": "${uuid}"${flow_line}
           }
         ],
-        "decryption": "none"
+        "decryption": "${vless_decryption}"
       },
       "streamSettings": {
         "network": "xhttp",
@@ -1065,24 +1141,40 @@ print_reality_result() {
   print_status_hint xray
 }
 
-# 用法：xhttp_link <连接地址> <XHTTP 模式> <备注> <split|single> [额外查询参数]
-# split 通过 extra.downloadSettings 让下行改走下行域名；single 上下行都走上行域名。
-xhttp_link() {
-  local address="$1" link_mode="$2" name="$3" layout="$4" extra_query="${5:-}"
-  local extra extra_param=""
+# 用法：download_extra_json <split|split-cdn>
+# split：下行直连下行域名；split-cdn：下行经 CDN 连接下行域名（hybrid），带 Host、可选 ECH，
+# 并固定用 IPv4 连接 Cloudflare。
+download_extra_json() {
+  local address="$down_domain" tls_extra="" xhttp_extra="" sockopt=""
 
-  [[ "$address" == *:* ]] && address="[${address}]"
-  if [[ "$layout" == "split" ]]; then
-    # 显式写出指纹：Xray 系客户端留空时默认 chrome，mihomo 留空时却是原生 Go TLS。
-    extra="{\"downloadSettings\":{\"address\":\"${down_domain}\",\"port\":${PORT},\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"${down_domain}\",\"alpn\":[\"h2\"],\"fingerprint\":\"${fingerprint}\"},\"xhttpSettings\":{\"path\":\"${xhttp_path}\"}}}"
-    extra_param="&extra=$(urlencode "$extra")"
+  if [[ "$1" == "split-cdn" ]]; then
+    address="${cdn_address:-$down_domain}"
+    [[ "$ech" != "true" ]] || tls_extra=",\"echConfigList\":\"${ech_config}\""
+    xhttp_extra=",\"host\":\"${down_domain}\""
+    sockopt=",\"sockopt\":{\"domainStrategy\":\"UseIPv4\"}"
   fi
-  printf 'vless://%s@%s:%s?encryption=none&security=tls&sni=%s%s&alpn=h2&fp=%s&type=xhttp&path=%s&mode=%s%s#%s' \
-    "$uuid" "$address" "$PORT" "$up_domain" "$extra_query" "$fingerprint" \
-    "$(urlencode "$xhttp_path")" "$link_mode" "$extra_param" "$name"
+  # 显式写出指纹：Xray 系客户端留空时默认 chrome，mihomo 留空时却是原生 Go TLS。
+  printf '{"downloadSettings":{"address":"%s","port":%s,"network":"xhttp","security":"tls","tlsSettings":{"serverName":"%s","alpn":["h2"],"fingerprint":"%s"%s},"xhttpSettings":{"path":"%s"%s}%s}}' \
+    "$address" "$PORT" "$down_domain" "$fingerprint" "$tls_extra" "$xhttp_path" "$xhttp_extra" "$sockopt"
 }
 
-# CDN 链接的额外查询参数：Host 头，以及可选的 ECH。
+# 用法：xhttp_link <连接地址> <XHTTP 模式> <备注> <split|split-cdn|single> [额外查询参数]
+# split / split-cdn 通过 extra.downloadSettings 让下行改走下行域名；single 上下行都走上行域名。
+xhttp_link() {
+  local address="$1" link_mode="$2" name="$3" layout="$4" extra_query="${5:-}"
+  local extra_param="" flow_param=""
+
+  [[ "$address" == *:* ]] && address="[${address}]"
+  case "$layout" in
+    split | split-cdn) extra_param="&extra=$(urlencode "$(download_extra_json "$layout")")" ;;
+  esac
+  [[ -z "$vless_flow" ]] || flow_param="&flow=${vless_flow}"
+  printf 'vless://%s@%s:%s?encryption=%s%s&security=tls&sni=%s%s&alpn=h2&fp=%s&type=xhttp&path=%s&mode=%s%s#%s' \
+    "$uuid" "$address" "$PORT" "$(urlencode "$vless_encryption")" "$flow_param" "$up_domain" \
+    "$extra_query" "$fingerprint" "$(urlencode "$xhttp_path")" "$link_mode" "$extra_param" "$name"
+}
+
+# 上行经过 CDN 的链接的额外查询参数：Host 头，以及可选的 ECH。
 cdn_query() {
   local query="&host=${up_domain}"
 
@@ -1093,39 +1185,41 @@ cdn_query() {
 }
 
 print_cdn_checklist() {
+  local cdn_dom i
+  cdn_dom="$(cdn_domain)"
   local -a steps=(
     "SSL/TLS 加密模式：Full (strict)（不要用 Flexible，否则会无限重定向）"
     "关闭 Always Use HTTPS（让证书续期的验证请求能到达源站 80 端口）"
     "关闭 Bot Fight Mode，或为路径 ${xhttp_path}* 添加 WAF 跳过规则"
   )
-  local i
 
   if [[ "$ech" == "true" ]]; then
     steps+=("确认 SSL/TLS → 边缘证书 中的 Encrypted ClientHello (ECH) 为开启状态（免费套餐默认开启）")
   fi
-  if [[ "$cdn_mode" == "up" ]]; then
-    steps+=("可选：开启 gRPC 后，可把上行 CDN 链接中的 mode=packet-up 改为 mode=stream-up")
-  else
-    steps+=("可选：开启 gRPC 后，可尝试把链接中的 mode=packet-up 改为 mode=stream-one，减少请求数")
-  fi
-  steps+=("最后把 ${up_domain} 切换为橙云（代理）")
+  case "$cdn_mode" in
+    up) steps+=("可选：开启 gRPC 后，可把上行 CDN 链接中的 mode=packet-up 改为 mode=stream-up") ;;
+    full) steps+=("可选：开启 gRPC 后，可尝试把链接中的 mode=packet-up 改为 mode=stream-one，减少请求数") ;;
+    down) steps+=("${cdn_dom} 只保留 A 记录，不要添加 AAAA（让 Cloudflare 经 IPv4 回源）") ;;
+  esac
+  steps+=("最后把 ${cdn_dom} 切换为橙云（代理）")
 
-  printf '接下来请在 Cloudflare 后台为 %s 完成：\n' "$up_domain"
+  printf '接下来请在 Cloudflare 后台为 %s 完成：\n' "$cdn_dom"
   for i in "${!steps[@]}"; do
     printf '  %d. %s\n' "$((i + 1))" "${steps[i]}"
   done
-  printf '  验证：curl -sI https://%s/ 的响应头中应包含 cf-ray\n' "$up_domain"
+  printf '  验证：curl -sI https://%s/ 的响应头中应包含 cf-ray\n' "$cdn_dom"
   if [[ "$ech" == "true" ]]; then
     printf '  注意：ECH 由 Cloudflare 终止，切换为橙云之前带 ECH 的链接无法连通。\n'
   fi
-  if [[ "$cdn_mode" == "up" ]]; then
-    printf '  注意：%s 必须保持灰云（仅 DNS）并直连本机。\n' "$down_domain"
-  fi
+  case "$cdn_mode" in
+    up) printf '  注意：%s 必须保持灰云（仅 DNS）并直连本机。\n' "$down_domain" ;;
+    down) printf '  注意：%s 必须保持灰云（仅 DNS），并且只配指向本机的 AAAA 记录。\n' "$up_domain" ;;
+  esac
   printf '  注意：经过 CDN 的流量都由 Cloudflare 转发，免费套餐晚高峰可能较慢，大流量使用也可能违反其服务条款。\n'
 }
 
 print_xhttp_result() {
-  local direct_link cdn_link full_link cdn_host="${cdn_address:-$up_domain}" site_dirs="" domain
+  local direct_link cdn_link full_link main_link cdn_host="${cdn_address:-$up_domain}" site_dirs="" domain
 
   for domain in "${site_domains[@]}"; do
     site_dirs+="${site_dirs:+、}${SITE_ROOT}/${domain}"
@@ -1134,6 +1228,9 @@ print_xhttp_result() {
   printf '\n\033[1;32m安装完成，Xray 与 Caddy 正在运行。\033[0m\n\n'
   if [[ "$cdn_mode" == "full" ]]; then
     printf '域名：%s（上下行都经过 Cloudflare）\n' "$up_domain"
+  elif [[ "$cdn_mode" == "down" ]]; then
+    printf '上行域名：%s（IPv6 直连）\n' "$up_domain"
+    printf '下行域名：%s（IPv4 经 Cloudflare）\n' "$down_domain"
   else
     printf '上行域名：%s\n' "$up_domain"
     printf '下行域名：%s\n' "$down_domain"
@@ -1142,7 +1239,11 @@ print_xhttp_result() {
   printf 'UUID：%s\n' "$uuid"
   printf 'XHTTP 路径：%s\n' "$xhttp_path"
   printf '客户端指纹：%s\n' "$fingerprint"
-  [[ "$ech" != "true" ]] || printf 'ECH（仅 CDN 链接）：%s\n' "$ech_config"
+  if [[ "$vless_encryption" != "none" ]]; then
+    printf 'VLESS Encryption（客户端）：%s\n' "$vless_encryption"
+    printf 'Flow：%s\n' "$vless_flow"
+  fi
+  [[ "$ech" != "true" ]] || printf 'ECH（仅 CDN 连接）：%s\n' "$ech_config"
 
   case "$cdn_mode" in
     none)
@@ -1172,6 +1273,16 @@ print_xhttp_result() {
       print_cdn_checklist
       printf '\n'
       ;;
+    down)
+      main_link="$(xhttp_link "$up_domain" stream-up Xray-Hybrid split-cdn)"
+      direct_link="$(xhttp_link "$up_domain" stream-up Xray-Hybrid-Test split)"
+      printf '传输模式：上行 stream-up；下行 GET 流\n\n'
+      printf '主链接（将 %s 切换为橙云后使用）：\n%s\n\n' "$down_domain" "$main_link"
+      printf '测试链接（下行不带 ECH；切换橙云前上下行都直连本机，用于确认服务端正常）：\n%s\n\n' "$direct_link"
+      print_cdn_checklist
+      printf '  客户端要求：较新的 Xray 内核（需支持 VLESS Encryption、XHTTP 上的 Vision、ECH 和 downloadSettings）；\n'
+      printf '  客户端所在网络需同时有 IPv4 和 IPv6。\n\n'
+      ;;
   esac
   printf 'Xray 配置：%s\n' "$CONFIG_FILE"
   printf 'Caddy 配置：%s\n' "$CADDY_FILE"
@@ -1198,7 +1309,7 @@ main() {
     [[ -z "$server_address" ]] || validate_address "$server_address" ||
       die "服务器地址格式不正确。"
   else
-    prompt_cdn_mode
+    [[ "$mode" == "hybrid" ]] || prompt_cdn_mode
     prompt_xhttp_domains
     prompt_cdn_options
   fi
@@ -1209,6 +1320,7 @@ main() {
   if [[ "$mode" == "reality" ]]; then
     [[ -n "$server_address" ]] || detect_public_address
   else
+    [[ "$mode" != "hybrid" ]] || require_public_ipv6
     check_domain_dns
   fi
   install_xray

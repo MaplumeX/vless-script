@@ -1,16 +1,18 @@
 # AGENTS.md
 
-本仓库是一个 Bash 一键安装脚本 `install.sh`，在 Linux 服务器上部署 VLESS 节点，有两种方案：
+本仓库是一个 Bash 一键安装脚本 `install.sh`，在 Linux 服务器上部署 VLESS 节点，有三种方案：
 
 - `reality`：VLESS + REALITY + Vision，Xray 直接监听 443；
 - `xhttp`：VLESS + XHTTP + TLS，由 Caddy 在前面终止 TLS。上行和下行通常分别走两个域名，
   也可以让上行或全程经过 Cloudflare CDN（`--cdn up|full`），并可选 ECH。
+- `hybrid`：服务端结构同 `xhttp`，VLESS 层固定启用 VLESS Encryption 和 Vision；上行经 IPv6 直连，
+  下行经 IPv4 走 Cloudflare 并启用 ECH。
 
 用户文档见 `README.md`。
 
 ## 部署、重装、切换方案或写伪装站
 
-如果用户要你在服务器上搭建或重装节点、在两种方案之间切换、为 XHTTP 域名制作伪装站，
+如果用户要你在服务器上搭建或重装节点、在几种方案之间切换、为 XHTTP / hybrid 域名制作伪装站，
 或者排查节点连不上的问题：**先完整阅读 [`skills/vless-deploy/SKILL.md`](skills/vless-deploy/SKILL.md)，
 再按其中的步骤执行**。其中几条硬性要求：
 

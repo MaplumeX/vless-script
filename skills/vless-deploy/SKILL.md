@@ -1,19 +1,20 @@
 ---
 name: vless-deploy
-description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装或切换 VLESS 节点（REALITY + Vision，或 XHTTP + TLS，可上下行分离或经过 Cloudflare CDN、可选 ECH），并为 XHTTP 方案的每个域名各写一个不同的静态伪装站。当用户要求搭建/安装/重装节点、选择或切换 REALITY 与 XHTTP 方案、生成或更换伪装站、排查节点连不上时使用。
+description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装或切换 VLESS 节点（REALITY + Vision；XHTTP + TLS，可上下行分离或经过 Cloudflare CDN、可选 ECH；或 hybrid：VLESS Encryption + Vision + XHTTP，上行 IPv6 直连、下行 IPv4 经 Cloudflare + ECH），并为 XHTTP / hybrid 方案的每个域名各写一个不同的静态伪装站。当用户要求搭建/安装/重装节点、选择或切换 REALITY、XHTTP 与 hybrid 方案、生成或更换伪装站、排查节点连不上时使用。
 ---
 
 # 用 install.sh 部署 VLESS 节点
 
-本仓库的 `install.sh` 支持两种方案：
+本仓库的 `install.sh` 支持三种方案：
 
 | 方案 | `--mode` | 需要用户提供 | 前端 |
 | --- | --- | --- | --- |
 | VLESS + REALITY + Vision | `reality` | 一个 REALITY 目标域名（别人的站点，不需要解析到本机） | Xray 直接监听 443 |
 | VLESS + XHTTP + TLS | `xhttp` | 两个不同的、已解析到本机的自有域名（`--cdn full` 时一个） | Caddy 监听 80/443，Xray 只监听 `127.0.0.1:30001` |
+| VLESS Encryption + Vision + XHTTP（上行 IPv6 直连，下行 IPv4 经 Cloudflare + ECH） | `hybrid` | 两个不同的自有域名（上行只配 AAAA，下行只配 A 且托管在 Cloudflare）；本机公网 IPv6 | 同 `xhttp` |
 
 脚本的完整行为见仓库根目录的 `README.md`；本文档只规定 agent 怎样安全地执行它，以及
-怎样完成脚本刻意留给人做的部分：XHTTP 方案的伪装站。
+怎样完成脚本刻意留给人做的部分：XHTTP 和 hybrid 方案的伪装站。
 
 ## 0. 先弄清楚在哪台机器上执行
 
@@ -41,6 +42,10 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 - REALITY：无需域名，部署最快；依赖 uTLS 指纹模拟和借用目标站点。
 - XHTTP：需要两个域名，使用自己的真实证书，上行和下行拆到两条连接；
   多一层 Caddy，开销略高。
+- hybrid：在 XHTTP 的基础上，上行走 IPv6 直连，下行走 IPv4 经 Cloudflare 并启用 ECH，VLESS 层
+  固定启用 Encryption 和 Vision。上下行最难关联，Cloudflare 也看不到 VLESS 头部；代价是大流量的
+  下行经过 Cloudflare 免费套餐（晚高峰可能慢、有服务条款风险），并且需要本机公网 IPv6、客户端网络
+  同时有 IPv4 和 IPv6，以及较新的 Xray 内核。
 
 然后收集参数。REALITY 要一个目标域名。XHTTP 先问清楚 CDN 方式（只支持 Cloudflare），
 再按方式收集域名：
@@ -56,6 +61,10 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 - 用户想在握手里隐藏自己的域名，就加 `--ech`。要告诉用户：客户端必须支持 ECH，否则连不上；
   ECH 只作用于经过 Cloudflare 的那一段；
 - 执行脚本前，所有域名都必须是灰云，否则证书签不下来。
+
+hybrid 收集 `--up-domain` 和 `--down-domain`（建议用不同的主域名），可选 `--cdn-address`（不能是
+IPv6）。它不接受 `--cdn` 和 `--ech`。执行前要和用户确认 DNS：上行域名只配指向本机 IPv6 的 AAAA，
+下行域名只配指向本机 IPv4 的 A，两者都先保持灰云。
 REALITY 方案在 NAT 或多出口环境下，可以额外用 `--address` 指定客户端实际连接的地址。
 
 客户端 TLS 指纹默认是 `chrome`，这是 Xray 官方推荐的主流做法，一般不用改。用户明确
@@ -84,7 +93,11 @@ head -n 1 /etc/caddy/Caddyfile 2>/dev/null      # 已有 Caddy 配置及是否�
     域名都已解析到本机（经过 CDN 时可以例外，但要提醒用户证书申请可能失败）；
   - TCP 80 不能被 Caddy 以外的程序占用；
   - 提醒用户在云安全组中放行 TCP 80、TCP 443。
-- 443 被 Caddy 占用而用户要装 REALITY（即从 XHTTP 切回 REALITY）：脚本会拒绝执行。
+- hybrid：除 XHTTP 的检查外，
+  - `curl -6s https://api64.ipify.org` 必须返回本机公网 IPv6，否则脚本会退出；
+  - `getent ahosts <上行域名>` 只应出现本机 IPv6，`getent ahosts <下行域名>` 只应出现本机 IPv4；
+  - 提醒用户云安全组对 IPv6 也要放行 TCP 80、443。
+- 443 被 Caddy 占用而用户要装 REALITY（即从 XHTTP 或 hybrid 切回 REALITY）：脚本会拒绝执行。
   先征得用户同意，再执行 `systemctl disable --now caddy`，或在 OpenRC 上执行
   `rc-service caddy stop && rc-update del caddy default`。Caddy 上可能还托管着别的站点，
   不要擅自停掉。
@@ -98,6 +111,7 @@ sudo bash ./install.sh --mode reality --domain <目标域名> [--address <地址
 sudo bash ./install.sh --mode xhttp --up-domain <上行域名> --down-domain <下行域名> \
   [--cdn up [--cdn-address <优选地址>] [--ech]]
 sudo bash ./install.sh --mode xhttp --cdn full --domain <域名> [--cdn-address <优选地址>] [--ech]
+sudo bash ./install.sh --mode hybrid --up-domain <上行域名> --down-domain <下行域名> [--cdn-address <IPv4 优选地址>]
 ```
 
 - `--force` 会直接覆盖现有的 Xray 配置，以及不是本脚本生成的 Caddyfile，不保留备份；
@@ -108,7 +122,7 @@ sudo bash ./install.sh --mode xhttp --cdn full --domain <域名> [--cdn-address 
 - 脚本结束时输出的 `vless://` 链接就是登录凭据：原样交给用户；不要写进仓库、记忆、
   日志文件，也不要发给任何第三方服务。
 
-## 4. XHTTP 方案：写伪装站
+## 4. XHTTP / hybrid 方案：写伪装站
 
 脚本只为每个域名创建一个空目录 `/var/www/<域名>`（通常是上行和下行两个；`--cdn full`
 时只有一个），Caddy 把它们作为各自的站点根目录。目录为空时首页返回 404，伪装站需要 agent 来写。
@@ -196,12 +210,13 @@ done   # 没有输出即全部正常
 所有页面都要返回 200，内容类型为 `text/html`；不存在的页面返回 404；XHTTP 路径
 没有出现在任何文件里。
 
-## 4.5 XHTTP 方案：经过 CDN 时的收尾工作
+## 4.5 XHTTP / hybrid 方案：经过 CDN 时的收尾工作
 
-使用 `--cdn up` 或 `--cdn full` 时，脚本会打印一份 Cloudflare 设置清单，并输出以下链接：
+使用 `--cdn up`、`--cdn full` 或 hybrid 方案时，脚本会打印一份 Cloudflare 设置清单，并输出以下链接：
 
 - `--cdn up`：直连链接、上行 CDN 链接、全程 CDN 应急链接；
-- `--cdn full`：一条全程 CDN 链接。
+- `--cdn full`：一条全程 CDN 链接；
+- hybrid：主链接（下行经 Cloudflare + ECH）和测试链接（下行直连、不带 ECH）。
 
 agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。按下面的顺序带用户完成：
 
@@ -209,7 +224,8 @@ agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。�
    - `--cdn up`：把直连链接交给用户，让用户确认能连上；
    - `--cdn full`：域名还是灰云、没加 `--ech` 且没指定 `--cdn-address` 时，CDN 链接此时就会直连
      本机，可以先测一次。否则用 `curl --resolve <域名>:443:127.0.0.1 https://<域名>/` 确认
-     Caddy 正常。
+     Caddy 正常；
+   - hybrid：在下行域名还是灰云时，让用户用测试链接确认能连上。
 2. 让用户按清单逐项完成 Cloudflare 设置：Full (strict)、关闭 Always Use HTTPS、关闭
    Bot Fight Mode 或添加 WAF 跳过规则；启用 ECH 时，确认边缘证书中的 ECH 开关已打开。
    最后把经过 CDN 的域名切换为橙云。`--cdn up` 时下行域名必须保持灰云。
@@ -241,6 +257,11 @@ agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。�
     Xray 没在运行；
   - 客户端需要支持 xhttp 和 `extra.downloadSettings`；在 mihomo 中手动配置时要设置
     `client-fingerprint`，值与链接里的 `fp` 一致（默认 `chrome`）。mihomo 留空时会用原生 Go TLS。
+- hybrid 连不上时，除上面几项外：
+  - 客户端内核是否足够新，能识别链接里的 `encryption=`、`flow=xtls-rprx-vision` 和 ECH；
+  - 客户端网络是否同时有 IPv4 和 IPv6（`curl -6 https://api64.ipify.org`）；
+  - 上行域名是否只有 AAAA、仍是灰云；云安全组是否对 IPv6 放行了 443；
+  - 测试链接能用、主链接不能用时，问题在 Cloudflare 这一段（橙云、SSL 模式、WAF、ECH 开关）。
 
 ## 6. 向用户汇报
 
@@ -249,6 +270,6 @@ agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。�
 - 采用的方案和域名；
 - 导入链接（原样给出脚本输出的全部链接，并说明各自的用途；CDN 链接要等域名切换为橙云后
   才经过 Cloudflare，带 ECH 的链接在此之前连不通）；
-- XHTTP 方案中每个伪装站的主题和页面清单；
+- XHTTP / hybrid 方案中每个伪装站的主题和页面清单；
 - 检查中发现的提醒，例如 DNS 不匹配、证书尚未签发、需要用户自己放行的云安全组端口；
 - 没能验证的部分要明说，例如没有用真实客户端测试连接。

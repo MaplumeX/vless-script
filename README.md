@@ -1,12 +1,14 @@
-# VLESS 一键安装脚本（REALITY / XHTTP）
+# VLESS 一键安装脚本（REALITY / XHTTP / hybrid）
 
-在 Linux 服务器上安装 Xray，并按选择生成以下两种节点之一。支持 systemd 发行版和使用 OpenRC
+在 Linux 服务器上安装 Xray，并按选择生成以下三种节点之一。支持 systemd 发行版和使用 OpenRC
 的 Alpine Linux，运行结束后会直接输出可供客户端导入的 `vless://` 链接。
 
 1. **VLESS + REALITY + Vision**：Xray 直接监听 443，借用目标站点的 TLS 握手，无需自有域名。
 2. **VLESS + XHTTP + TLS（上下行分离）**：Caddy 在 443 上用自己域名的真实证书终止 TLS，
    按路径把 XHTTP 请求以 h2c 转给只监听本地端口的 Xray；上行和下行分别走两个域名、
    两条互不相关的连接。也可以让上行或全程经过 Cloudflare CDN，并可选启用 ECH。
+3. **hybrid（VLESS Encryption + Vision + XHTTP）**：服务端结构同方案 2；上行经 IPv6 直连，
+   下行经 IPv4 走 Cloudflare 并启用 ECH，VLESS 层固定启用 VLESS Encryption 和 Vision。
 
 ## 功能
 
@@ -58,7 +60,16 @@ XHTTP 方案：
 | 客户端指纹 | 默认 `chrome`，可用 `--fingerprint` 修改，含 `unsafe`（原生 Go TLS） |
 | 其他路径 | 各域名独立的伪装站点 `/var/www/<域名>`（默认为空，需自行填充） |
 
-两种方案共用的路由规则：国内域名与 IP 阻断，Google 及 Google CN 规则直连。
+hybrid 方案：
+
+| 项目 | 值 |
+| --- | --- |
+| 前端、回源、伪装站点 | 与 XHTTP 方案相同 |
+| VLESS 层 | VLESS Encryption（`mlkem768x25519plus`，X25519 认证，`xorpub`）+ Vision（`xtls-rprx-vision`） |
+| 上行 | 上行域名，只配 AAAA，IPv6 直连，`stream-up` |
+| 下行 | 下行域名，只配 A，经 Cloudflare，ECH，客户端固定用 IPv4（`domainStrategy: UseIPv4`） |
+
+三种方案共用的路由规则：国内域名与 IP 阻断，Google 及 Google CN 规则直连。
 
 ## 环境要求
 
@@ -70,6 +81,8 @@ XHTTP 方案：
 - REALITY 方案：TCP 443 没有被 Nginx、Caddy、Apache 等其他服务占用；
 - XHTTP 方案：两个不同的域名（全程 CDN 时一个）都已解析到本机；TCP 80、443 没有被 Caddy 以外的程序
   占用（Xray 占用 443 时会自动改为只监听本地端口）。
+- hybrid 方案：在 XHTTP 方案的基础上，服务器还要有公网 IPv6，云安全组对 IPv6 也放行 80、443；
+  下行域名托管在 Cloudflare。
 
 脚本支持通过 `apk`、`apt-get`、`dnf`、`yum` 或 `zypper` 安装所需依赖。
 
@@ -95,13 +108,16 @@ sudo apk add --no-cache bash curl &&
 请选择安装方案：
   1. VLESS + REALITY + Vision（Xray 直接监听 443，借用目标站点的 TLS）
   2. VLESS + XHTTP + TLS（Caddy 前置终止 TLS；可上下行分离，也可经过 Cloudflare CDN）
+  3. VLESS Encryption + Vision + XHTTP：上行 IPv6 直连，下行 IPv4 经 Cloudflare + ECH
+     （需要两个域名和本机公网 IPv6）
 
-请输入数字 [1-2]:
+请输入数字 [1-3]:
 ```
 
 选择 1 后输入 REALITY 目标域名。选择 2 后先选择 CDN 方式（默认不走 CDN），再输入域名：
 不走 CDN 或上行走 CDN 时依次输入上行域名和下行域名，全程走 CDN 时只输入一个域名。这里只
-填写域名，不要包含 `https://`、端口、路径或通配符。
+填写域名，不要包含 `https://`、端口、路径或通配符。选择 3 后依次输入上行域名、下行域名和
+可选的优选地址。
 
 如果服务器上还没有安装 `curl`，可以先安装：
 
@@ -131,16 +147,19 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
                        [--cdn up [--cdn-address 104.16.0.1] [--ech]] [--force]
   sudo bash install.sh --mode xhttp --cdn full --domain cdn.example.com
                        [--cdn-address 104.16.0.1] [--ech] [--force]
+  sudo bash install.sh --mode hybrid --up-domain up.example.com --down-domain down.example.net
+                       [--cdn-address 104.16.0.1] [--force]
 
 参数：
-  -m, --mode         安装方案：reality 或 xhttp
+  -m, --mode         安装方案：reality、xhttp 或 hybrid
   -d, --domain       REALITY 目标域名；--cdn full 时为经过 Cloudflare 的域名
   -a, --address      REALITY 方案中客户端连接的服务器公网 IP 或域名
-      --up-domain    XHTTP 方案的上行域名
-      --down-domain  XHTTP 方案的下行域名，需与上行域名不同
+      --up-domain    XHTTP / hybrid 方案的上行域名
+      --down-domain  XHTTP / hybrid 方案的下行域名，需与上行域名不同
       --cdn          XHTTP 方案的 CDN 方式：none（默认）、up（上行走 Cloudflare、下行直连）、
                      full（一个域名，全程走 Cloudflare）
-      --cdn-address  CDN 链接使用的优选 IP 或优选域名，默认使用经过 CDN 的域名
+      --cdn-address  CDN 链接使用的优选 IP 或优选域名，默认使用经过 CDN 的域名；
+                     hybrid 方案中不能是 IPv6 地址
       --ech          为 CDN 链接启用 ECH，需要客户端支持
       --ech-config   ECH 配置来源，默认 cloudflare-ech.com+https://dns.alidns.com/dns-query；
                      指定时自动启用 --ech
@@ -150,7 +169,9 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
 ```
 
 未指定 `--mode` 时，给出 `--cdn`、`--up-domain` 或 `--down-domain` 视为 XHTTP 方案，只给出
-`--domain` 视为 REALITY 方案，否则显示菜单。旧的 `--domain` 用法保持不变。
+`--domain` 视为 REALITY 方案，否则显示菜单。旧的 `--domain` 用法保持不变。hybrid 方案需要
+显式指定 `--mode hybrid` 或在菜单中选择；它固定启用 VLESS Encryption、Vision 和 ECH，不接受
+`--cdn` 和 `--ech`。
 
 非交互安装示例：
 
@@ -178,6 +199,14 @@ curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install
     --domain cdn.example.com \
     --ech \
     --force
+
+# hybrid
+curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install.sh |
+  sudo bash -s -- \
+    --mode hybrid \
+    --up-domain up.example.com \
+    --down-domain down.example.net \
+    --force
 ```
 
 `--address` 可以省略，脚本会通过公网服务探测服务器地址。自动探测失败且当前是
@@ -191,7 +220,7 @@ cd vless-reality
 sudo ./install.sh
 ```
 
-如果已经存在 Xray 配置（XHTTP 方案还包括非本脚本生成的 `/etc/caddy/Caddyfile`），
+如果已经存在 Xray 配置（XHTTP 和 hybrid 方案还包括非本脚本生成的 `/etc/caddy/Caddyfile`），
 交互模式会要求确认后再覆盖；非交互模式必须显式添加 `--force`。每次重新运行都会
 生成新的凭据，原导入链接将随之失效。
 
@@ -372,10 +401,92 @@ REALITY 方案依赖 uTLS，不能使用 `unsafe`。
 
 ### 从一种方案切换到另一种
 
-- REALITY → XHTTP：直接重新运行并选择 2，Xray 会改为只监听 `127.0.0.1:30001`，
+- REALITY → XHTTP / hybrid：直接重新运行并选择 2 或 3，Xray 会改为只监听 `127.0.0.1:30001`，
   443 交给 Caddy。
-- XHTTP → REALITY：先停用 Caddy（`systemctl disable --now caddy`，或
+- XHTTP ↔ hybrid：直接重新运行并选择另一个即可；按新方案的要求调整 DNS 记录和橙云设置。
+- XHTTP / hybrid → REALITY：先停用 Caddy（`systemctl disable --now caddy`，或
   `rc-service caddy stop && rc-update del caddy default`），再重新运行并选择 1。
+
+## hybrid 方案说明
+
+hybrid 是一套固定的组合：服务端结构和 XHTTP 方案相同（Caddy 终止 TLS，Xray 只监听
+`127.0.0.1:30001`），但上下行走完全不同的路径，VLESS 层还加上了 VLESS Encryption 和 Vision。
+
+| | 上行 | 下行 |
+| --- | --- | --- |
+| 域名 | 上行域名，灰云，**只配 AAAA** | 下行域名，橙云，**只配 A** |
+| 路径 | 客户端 →（IPv6）→ 本机 Caddy | 客户端 →（IPv4）→ Cloudflare →（IPv4 回源）→ 本机 Caddy |
+| 安全层 | TLS（Caddy 签发的证书） | TLS（Cloudflare 终止）+ ECH |
+| XHTTP | `stream-up` | 下行 GET 流（`extra.downloadSettings`） |
+| VLESS 层 | VLESS Encryption（X25519 认证、`xorpub`）+ Vision，作用于整个会话 | 同左 |
+
+这样做的效果：
+
+- 两条连接的目标（本机对 Cloudflare）、IP 协议（IPv6 对 IPv4）和外部可见的 SNI（上行域名对
+  `cloudflare-ech.com`）都不同，很难被关联起来；
+- 请求中的 VLESS 头部（UUID、目标地址）只出现在直连的上行里，Cloudflare 看不到；经过 Cloudflare
+  的下行数据也由 VLESS Encryption 加密；
+- 在 XHTTP 上，Vision 必须和 VLESS Encryption 搭配使用。它会填充内层 TLS 握手的长度，减轻
+  TLS in TLS 特征。
+
+代价：大流量的下行全部经过 Cloudflare 免费套餐，国内晚高峰可能较慢，长期大流量使用也可能违反
+其服务条款；上行直连本机 IPv6，IP 被封时节点不可用。客户端要求也最高，见下文。
+
+### 准备
+
+1. 两个不同的域名。建议使用**不同的主域名**，例如 `a.example.com` 和 `b.example.net`，让外人
+   从证书和 DNS 上看不出两者有关系。
+2. 服务器有公网 IPv6，并且云安全组对 **IPv4 和 IPv6** 都放行 TCP 80、443。脚本检测不到本机公网
+   IPv6 时会直接退出。
+3. DNS，先全部设为灰云：
+   - 上行域名**只配 AAAA**，指向本机 IPv6；
+   - 下行域名**只配 A**，指向本机 IPv4，并托管在 Cloudflare。
+
+   ```text
+   up.example.com.    AAAA  2001:db8::10
+   down.example.net.  A     203.0.113.10
+   ```
+
+### 安装
+
+```bash
+sudo bash install.sh --mode hybrid \
+  --up-domain up.example.com --down-domain down.example.net \
+  [--cdn-address <IPv4 优选 IP 或优选域名>]
+```
+
+交互模式下在方案菜单中选 3。`--cdn` 和 `--ech` 在这个方案里是固定的，传入会被忽略；
+`--ech-config` 和 `--fingerprint` 仍然可用。`--cdn-address` 不能是 IPv6 地址。
+
+脚本会检查：上行域名应解析到本机 IPv6 且没有 A 记录；下行域名在灰云阶段应解析到本机 IPv4，
+且没有指向本机的 AAAA 记录。不符合时只提醒，不中断。
+
+### 输出的链接
+
+- **主链接**：上行直连上行域名；下行经 Cloudflare 连接下行域名（地址可以是优选 IP），带 `host` 和
+  ECH，并在 `downloadSettings.sockopt` 中设置 `domainStrategy: UseIPv4`，让客户端固定通过 IPv4
+  连接 Cloudflare。下行域名切换为橙云后才能使用。
+- **测试链接**：下行直连下行域名，不带 ECH。切换橙云之前，上下行都直连本机，可以先用它确认
+  服务端正常。
+
+两条链接都带有 `encryption=`（VLESS Encryption 的客户端参数）和 `flow=xtls-rprx-vision`。
+
+### Cloudflare 设置
+
+装完后按脚本打印的清单为下行域名完成：Full (strict)、关闭 Always Use HTTPS、关闭 Bot Fight Mode
+或为 XHTTP 路径添加 WAF 跳过规则、确认 ECH 已开启、只保留 A 记录，最后切换为**橙云**。上行域名
+始终保持灰云。下行是 GET 流，不需要打开 gRPC。
+
+### 客户端要求
+
+- 需要较新的 Xray 内核，能支持 VLESS Encryption、XHTTP 上的 Vision、ECH 和
+  `extra.downloadSettings`，例如使用最新 Xray 内核的 v2rayN / v2rayNG。mihomo 等其他内核
+  没有验证过；
+- 客户端所在网络必须**同时有 IPv4 和 IPv6**，否则上行或下行有一侧连不上。
+
+本仓库在本地验证过：由脚本生成的服务端配置和链接（上行经 IPv6、下行经 IPv4），以及 `UseIPv4`
+确实对下行生效。ECH 的验证见 XHTTP 方案的“ECH”一节。没有用真实的 Cloudflare 和真实的 IPv6
+网络做过完整测试。
 
 ## 让 agent 部署
 
@@ -385,7 +496,7 @@ REALITY 方案依赖 uTLS，不能使用 `unsafe`。
 - 选择方案；
 - 部署前检查；
 - 以非交互方式执行脚本（可在本机执行，也可经 SSH 执行）；
-- XHTTP 方案中为每个域名分别创作不同的多页面伪装站，并完成验证；
+- XHTTP 和 hybrid 方案中为每个域名分别创作不同的多页面伪装站，并完成验证；
 - 切换方案和排障。
 
 文件采用通用的 `SKILL.md` 格式（YAML 头部 `name` / `description` 加 Markdown 正文），
