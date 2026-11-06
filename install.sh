@@ -876,7 +876,8 @@ write_config() {
 
   if [[ "$mode" == "reality" ]]; then
     inbounds="$(reality_inbounds_json)"
-    mode_rules="$(reality_routing_rules_json)"
+    # 自带开头的换行，没有额外规则时 "rules": [ 后面不会多出空行。
+    mode_rules=$'\n'"$(reality_routing_rules_json)"
   else
     inbounds="$(xhttp_inbounds_json)"
   fi
@@ -919,8 +920,7 @@ ${inbounds}
   ],
   "routing": {
     "domainStrategy": "IPIfNonMatch",
-    "rules": [
-${mode_rules}
+    "rules": [${mode_rules}
       {
         "type": "field",
         "domain": [
