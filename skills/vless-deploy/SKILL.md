@@ -43,6 +43,8 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
   多一层 Caddy，开销略高。
 
 然后收集参数：REALITY 要一个目标域名；XHTTP 要上行域名和下行域名（两者必须不同）。
+XHTTP 方案还要问清楚上行是否走 CDN。如果走（只支持 Cloudflare），就加 `--cdn-up`；
+用户有优选 IP 或优选域名时，再加 `--cdn-address`。这种情况下，执行脚本前两个域名都必须是灰云。
 REALITY 方案在 NAT 或多出口环境下，可以额外用 `--address` 指定客户端实际连接的地址。
 
 客户端 TLS 指纹默认是 `chrome`，这是 Xray 官方推荐的主流做法，一般不用改。用户明确
@@ -179,6 +181,24 @@ done   # 没有输出即全部正常
 所有页面都要返回 200，内容类型为 `text/html`；不存在的页面返回 404；XHTTP 路径
 没有出现在任何文件里。
 
+## 4.5 XHTTP 方案：上行走 CDN 时的收尾工作
+
+使用 `--cdn-up` 时，脚本会输出“直连链接”和“上行 CDN 链接”两条链接，并打印一份
+Cloudflare 设置清单。agent 不需要、也不应该向用户索要 Cloudflare 账号或 API Token。
+按下面的顺序带用户完成：
+
+1. 先把直连链接交给用户，让用户确认能连上，以排除服务端的问题。
+2. 让用户按清单逐项完成 Cloudflare 设置：Full (strict)、关闭 Always Use HTTPS、关闭
+   Bot Fight Mode 或添加 WAF 跳过规则，最后把上行域名切换为橙云。下行域名必须保持灰云。
+3. 用户切换完成后，由 agent 验证：
+   - `getent ahosts <上行域名>` 应返回 Cloudflare 的 IP；
+   - `curl -sI https://<上行域名>/` 的响应头中应有 `cf-ray`；
+   - `getent ahosts <下行域名>` 仍应返回本机 IP。
+4. 让用户用 CDN 链接实际连接测试。连不上时，依次排查：
+   - SSL 模式是否为 Flexible：如果是，会出现重定向循环；
+   - Bot Fight Mode 或 WAF 是否拦截了 POST 请求：会返回 403 或质询页；
+   - 如果用户把模式改成了 `stream-up`：Cloudflare 的 gRPC 开关是否已经打开。
+
 ## 5. 部署后检查与排障
 
 - 服务状态：`systemctl status xray caddy --no-pager`（OpenRC：`rc-service xray status`、
@@ -202,7 +222,7 @@ done   # 没有输出即全部正常
 用几行说明：
 
 - 采用的方案和域名；
-- 导入链接（原样给出）；
+- 导入链接（原样给出；使用 CDN 时两条都给，并说明 CDN 链接要等上行域名切换为橙云后才能用）；
 - XHTTP 方案中两个伪装站各自的主题和页面清单；
 - 检查中发现的提醒，例如 DNS 不匹配、证书尚未签发、需要用户自己放行的云安全组端口；
 - 没能验证的部分要明说，例如没有用真实客户端测试连接。

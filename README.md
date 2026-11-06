@@ -123,7 +123,8 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
 用法：
   sudo bash install.sh
   sudo bash install.sh --mode reality --domain example.com [--address 203.0.113.10] [--force]
-  sudo bash install.sh --mode xhttp --up-domain up.example.com --down-domain down.example.com [--force]
+  sudo bash install.sh --mode xhttp --up-domain up.example.com --down-domain down.example.com
+                       [--cdn-up [--cdn-address 104.16.0.1]] [--force]
 
 参数：
   -m, --mode         安装方案：reality 或 xhttp
@@ -131,6 +132,8 @@ XHTTP 方案为上下行域名、UUID、路径）和完整的 `vless://` 客户�
   -a, --address      REALITY 方案中客户端连接的服务器公网 IP 或域名
       --up-domain    XHTTP 方案的上行域名
       --down-domain  XHTTP 方案的下行域名，需与上行域名不同
+      --cdn-up       XHTTP 方案中上行走 Cloudflare CDN、下行直连，额外输出 CDN 链接
+      --cdn-address  CDN 链接使用的优选 IP 或优选域名，默认使用上行域名
       --fingerprint  客户端 TLS 指纹，默认 chrome；unsafe（原生 Go TLS）仅 XHTTP 可用
   -f, --force        无交互覆盖已有 Xray / Caddy 配置
   -h, --help         显示帮助
@@ -181,6 +184,11 @@ sudo ./install.sh
 `down.example.com`），都添加 A/AAAA 记录指向服务器。Caddy 需要通过 80 或 443
 完成 ACME 验证，所以请在云安全组中放行 TCP 80、TCP 443（以及可选的 UDP 443）。
 
+默认情况下，**两个域名在 Cloudflare 等 DNS 服务商处都应保持“仅 DNS”（灰云）**，直接
+连到服务器。不要直接开启 CDN 代理（橙云）：默认链接的上行使用 `stream-up`，未经设置
+的 CDN 通常无法流式转发上行请求，而 SSL 模式设置不当还会造成无限重定向。如需经过
+CDN，请看下文“进阶：上行走 CDN、下行直连”。
+
 脚本会检查两个域名的解析结果是否包含本机公网地址；不包含时只给出提醒，不会中断，
 以兼容经过 CDN 的场景。Caddy 启动后，脚本会等待最多约 90 秒确认两个域名的 HTTPS
 可用。
@@ -223,6 +231,47 @@ DNS 检查也接受只解析到本机 IPv6 的域名；UFW 启用 IPv6 时（`IP
 
 切换配法只需要修改 DNS 记录，并等待生效，不必重新运行脚本。证书按域名签发，与解析到
 哪个地址无关；不过新地址必须能从外部访问，否则之后续期证书时会失败。
+
+### 进阶：上行走 CDN、下行直连
+
+上行连接经过 Cloudflare，下行连接直连服务器。这样两条连接的目标 IP、ASN 和网络路径
+都不相同，很难被关联起来。上行流量通常很小，也不会给 CDN 带来负担；大流量的下行直连，
+速度有保障。服务端配置不需要任何改动，只是多出一条客户端链接。目前只支持 Cloudflare。
+
+前提：上行域名托管在 Cloudflare。下行域名托管在哪里都可以，但必须直连本机。
+
+1. **先把两个域名都设为灰云**，并指向服务器，以便 Caddy 首次签发证书。
+2. 运行脚本时选择上行走 CDN（交互菜单中选 2，或加 `--cdn-up`）：
+
+   ```bash
+   sudo bash install.sh --mode xhttp \
+     --up-domain up.example.com --down-domain down.example.com \
+     --cdn-up [--cdn-address <优选IP或域名>]
+   ```
+
+3. 脚本会输出两条链接：
+   - **直连链接**：两个域名都直连，上行使用 `stream-up`。装完就能用，CDN 出问题时也可作为备用。
+   - **上行 CDN 链接**：上行使用 `packet-up`，不依赖 Cloudflare 的 gRPC 开关；并且总是带上
+     `host` 参数，所以把地址换成优选 IP 也能正常工作。下行配置与直连链接相同。
+4. 按脚本最后打印的清单设置 Cloudflare（针对上行域名）：
+   - SSL/TLS 加密模式选 **Full (strict)**，不要用 Flexible；
+   - 关闭 **Always Use HTTPS**，让证书续期的 HTTP-01 验证请求能到达源站；
+   - 关闭 **Bot Fight Mode**，或为 XHTTP 路径添加 WAF 跳过规则；
+   - 可选：开启 **gRPC** 后，可以把 CDN 链接里的 `mode=packet-up` 改为 `mode=stream-up`。
+5. 把上行域名切换为**橙云**。下行域名保持灰云。
+6. 验证：`curl -sI https://up.example.com/` 的响应头中应包含 `cf-ray`；然后用 CDN 链接
+   实际连接测试。
+
+需要知道的几点：
+
+- Cloudflare 会终止外层 TLS，而 VLESS 本身不加密（`decryption: none`）。因此 Cloudflare 能看到
+  上行请求中的 VLESS 头部，包括 UUID 和每条连接的目标地址。访问 HTTPS 网站时，网页内容仍由
+  内层 TLS 保护。
+- 下行直连，所以服务器 IP 并没有被隐藏。这个方案的目的是让上下行难以关联，而不是隐藏 IP。
+- 上行域名开启橙云后，重新运行脚本时 DNS 检查会给出提醒，但不会中断安装；已签发的证书
+  不受影响。
+- 如果某次证书续期失败，可以临时把上行域名切回灰云，等 Caddy 续期成功后再切回橙云。
+- 本仓库没有用真实的 Cloudflare 域名做过完整测试，以上 Cloudflare 设置参考的是社区经验。
 
 ### 生成的文件
 
