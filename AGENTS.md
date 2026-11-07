@@ -8,7 +8,7 @@
 - `hybrid`：服务端结构同 `xhttp`，VLESS 层固定启用 VLESS Encryption 和 Vision；上行经 IPv6 直连，
   下行经 IPv4 走 Cloudflare 并启用 ECH。
 
-用户文档见 `README.md`。
+用户文档见 `README.md`，各方案的详细说明和运维排障见 `docs/`。
 
 ## 部署、重装、切换方案或写伪装站
 
@@ -29,5 +29,5 @@
 - 面向用户的输出使用中文，统一经过 `info` / `warn` / `die` 打印。
 - 改完至少运行 `bash -n install.sh`。生成的配置应当可以通过 `xray run -test` 和
   `caddy validate --adapter caddyfile` 的校验。
-- 新增或修改参数和行为时，同步更新 `README.md`，以及 `skills/vless-deploy/SKILL.md`
-  中对应的步骤。
+- 新增或修改参数和行为时，同步更新 `README.md` 和 `docs/` 中的相关文档，
+  以及 `skills/vless-deploy/SKILL.md` 中对应的步骤。

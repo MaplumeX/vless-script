@@ -13,7 +13,8 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 | VLESS + XHTTP + TLS | `xhttp` | 两个不同的、已解析到本机的自有域名（`--cdn full` 时一个） | Caddy 监听 80/443，Xray 只监听 `127.0.0.1:30001` |
 | VLESS Encryption + Vision + XHTTP（上行 IPv6 直连，下行 IPv4 经 Cloudflare + ECH） | `hybrid` | 两个不同的自有域名（上行只配 AAAA，下行只配 A 且托管在 Cloudflare）；本机公网 IPv6 | 同 `xhttp` |
 
-脚本的完整行为见仓库根目录的 `README.md`；本文档只规定 agent 怎样安全地执行它，以及
+脚本的完整行为见仓库根目录的 `README.md`，以及 `docs/` 下各方案的详细说明（`reality.md`、`xhttp.md`、
+`hybrid.md`、`operations.md`）；本文档只规定 agent 怎样安全地执行它，以及
 怎样完成脚本刻意留给人做的部分：XHTTP 和 hybrid 方案的伪装站。
 
 ## 0. 先弄清楚在哪台机器上执行
