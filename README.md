@@ -38,14 +38,14 @@ Cloudflare 免费套餐时，可以选 hybrid。
 ## 快速开始
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-script/main/install.sh | sudo bash
 ```
 
 Alpine 默认没有 Bash 和 curl，先补齐：
 
 ```bash
 sudo apk add --no-cache bash curl &&
-  curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-script/main/install.sh | sudo bash
 ```
 
 脚本会显示菜单，按提示操作即可：
@@ -73,8 +73,8 @@ sudo apk add --no-cache bash curl &&
 也可以克隆仓库后运行：
 
 ```bash
-git clone https://github.com/MaplumeX/vless-reality.git
-cd vless-reality
+git clone https://github.com/MaplumeX/vless-script.git
+cd vless-script
 sudo ./install.sh
 ```
 
@@ -83,7 +83,7 @@ sudo ./install.sh
 通过参数传入全部选择，适合脚本化部署：
 
 ```bash
-URL=https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install.sh
+URL=https://raw.githubusercontent.com/MaplumeX/vless-script/main/install.sh
 
 # REALITY
 curl -fsSL "$URL" | sudo bash -s -- --mode reality --domain www.example.com
@@ -186,7 +186,7 @@ mihomo 等其他内核需要确认能识别；启用 VLESS Encryption 或 ECH �
 - Claude Code 可以通过 `.claude/skills/vless-deploy` 软链接直接加载，其他支持 skill 目录的工具
   可以复制或链接 `skills/vless-deploy/`；
 - 其他 agent 可以直接给它 raw 链接：
-  `https://raw.githubusercontent.com/MaplumeX/vless-reality/main/skills/vless-deploy/SKILL.md`。
+  `https://raw.githubusercontent.com/MaplumeX/vless-script/main/skills/vless-deploy/SKILL.md`。
 
 然后告诉 agent：“帮我在 <服务器> 上部署 XHTTP 节点，域名是 …”。只有在你确认之后，agent 才会用
 `--force` 覆盖已有配置或停用 Caddy。

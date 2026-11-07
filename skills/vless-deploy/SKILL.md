@@ -31,7 +31,7 @@ description: 使用本仓库的 install.sh 在 Linux 服务器上部署、重装
 - 手边没有本仓库的检出（例如只拿到了这份说明）：先下载脚本并通读一遍，确认内容后再执行：
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-reality/main/install.sh -o install.sh
+  curl -fsSL https://raw.githubusercontent.com/MaplumeX/vless-script/main/install.sh -o install.sh
   ```
 
 - 不知道目标主机时询问用户；不要猜测，也不要在本地开发机上执行安装。
