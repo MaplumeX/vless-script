@@ -117,6 +117,28 @@ hybrid：
 - 上行域名是否只有 AAAA、仍是灰云；
 - 测试链接能用、主链接不能用时，问题在 Cloudflare 这一段（橙云、SSL 模式、WAF、ECH 开关）。
 
+### Xray 日志里刷屏 `X-Forwarded-For` 警告
+
+```text
+[Warning] common/protocol/http: received "X-Forwarded-For" from 127.0.0.1:... but "sockopt.trustedXForwardedFor" is not configured
+```
+
+XHTTP 和 hybrid 方案中，Caddy 转发每个请求时都会带上 `X-Forwarded-For`。较新的 Xray 在入站没有配置
+`sockopt.trustedXForwardedFor` 时，每个请求都会打一条这样的警告。功能不受影响，只是日志里所有来源
+都显示为 `127.0.0.1`。
+
+现在的脚本已经在 XHTTP 入站上配置了它，重新运行脚本即可。不想重装时，可以手动在 `config.json` 中
+`xhttp-in` 入站的 `streamSettings` 里加上下面这段，校验后重启 Xray：
+
+```json
+"sockopt": {
+  "trustedXForwardedFor": ["X-Forwarded-Proto"]
+}
+```
+
+Caddy 转发时总会加上 `X-Forwarded-Proto`，并用自己看到的来源覆盖客户端发来的 `X-Forwarded-*`；Xray 又
+只监听本机，请求必经 Caddy，所以这样信任 XFF 是安全的。
+
 ### 自动探测到的公网地址不正确
 
 NAT、多出口或代理环境可能影响自动探测。REALITY 方案重新运行时用 `--address` 指定客户端实际应该

@@ -23,6 +23,7 @@ VLESS + XHTTP + TLS。Caddy 在 443 上用你自己域名的真实证书终止 T
 | 传输 | XHTTP。服务端 `mode: auto`；直连链接用 `stream-up`，CDN 链接用 `packet-up` |
 | 前端 | Caddy 监听 80、443，自动申请证书 |
 | 回源 | `127.0.0.1:30001`，h2c，`flush_interval -1` |
+| 来源地址 | 信任 Caddy 转发的 `X-Forwarded-For`（`sockopt.trustedXForwardedFor`），Xray 日志记录客户端的真实地址；经过 Cloudflare 时记录的是 Cloudflare 节点的地址 |
 | 上行 | 上行域名，ALPN `h2` |
 | 下行 | 下行域名（`extra.downloadSettings`），ALPN `h2`；全程 CDN 时与上行同一个域名 |
 | CDN | 可选，`--cdn up` 或 `--cdn full`（仅 Cloudflare），可选 ECH |

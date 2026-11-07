@@ -897,6 +897,8 @@ xhttp_inbounds_json() {
 
   [[ -z "$vless_flow" ]] || flow_line=",
             \"flow\": \"${vless_flow}\""
+  # Caddy 转发时总会加上 X-Forwarded-Proto，并用自己看到的来源覆盖 X-Forwarded-For；
+  # Xray 只监听本机，请求必经 Caddy。据此信任 XFF，日志里记录真实来源，也不会每个请求都报警告。
   cat <<EOF
     {
       "tag": "xhttp-in",
@@ -916,6 +918,9 @@ xhttp_inbounds_json() {
         "xhttpSettings": {
           "path": "${xhttp_path}",
           "mode": "auto"
+        },
+        "sockopt": {
+          "trustedXForwardedFor": ["X-Forwarded-Proto"]
         }
       }
     }
